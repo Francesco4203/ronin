@@ -20,6 +20,7 @@ package v1
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"math/rand"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/rlp"
 	"golang.org/x/crypto/sha3"
@@ -167,6 +169,11 @@ func (c *Consortium) SetGetFenixValidators(fn func() ([]common.Address, error)) 
 // from the signature in the header's extra-data section.
 func (c *Consortium) Author(header *types.Header) (common.Address, error) {
 	return Ecrecover(header, c.signatures)
+}
+
+// VerifyBlobHeader only available in v2
+func (c *Consortium) VerifyBlobHeader(block *types.Block, blobs *[]kzg4844.Blob, proofs *[]kzg4844.Proof) error {
+	return fmt.Errorf("not implemented")
 }
 
 // VerifyHeader checks whether a header conforms to the consensus rules.
