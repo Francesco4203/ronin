@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/params"
@@ -46,6 +47,15 @@ func (c *Consortium) Author(header *types.Header) (common.Address, error) {
 	}
 
 	return c.v1.Author(header)
+}
+
+// VerifyBlobHeader implements consensus.Engine, verifying the header's blob commitment
+func (c *Consortium) VerifyBlobHeader(block *types.Block, blobs *[]kzg4844.Blob, proofs *[]kzg4844.Proof) error {
+	if c.chainConfig.IsConsortiumV2(block.Header().Number) {
+		return c.v2.VerifyBlobHeader(block, blobs, proofs)
+	}
+
+	return nil
 }
 
 // VerifyHeader checks whether a header conforms to the consensus rules.

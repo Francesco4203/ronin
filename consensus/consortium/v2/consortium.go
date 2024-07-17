@@ -2,6 +2,7 @@ package v2
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/crypto/bls/blst"
 	blsCommon "github.com/ethereum/go-ethereum/crypto/bls/common"
+	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/log"
@@ -50,6 +52,8 @@ const (
 	assemblingFinalityVoteDuration         = 1 * time.Second
 	MaxValidatorCandidates                 = 64 // Maximum number of validator candidates.
 	dayInSeconds                           = uint64(86400)
+
+	blobKeepPeriod = 18 * 24 * time.Hour // The period of time before which the blob is pruned
 )
 
 // Consortium delegated proof-of-stake protocol constants.
@@ -201,6 +205,49 @@ func (c *Consortium) IsSystemContract(to *common.Address) bool {
 // Author implements consensus.Engine, returning the coinbase directly
 func (c *Consortium) Author(header *types.Header) (common.Address, error) {
 	return header.Coinbase, nil
+}
+
+// VerifyBlobHeader verifies the header of a blob block
+func (c *Consortium) VerifyBlobHeader(block *types.Block, blobs *[]kzg4844.Blob, proofs *[]kzg4844.Proof) error {
+	if err := c.verifyVersionHash(block); err != nil {
+		return err
+	}
+	if c.skipBlobCheck(block.Header()) {
+		return nil
+	}
+	if len(block.Header().BlobCommitments) != len(*blobs) || len(block.Header().BlobCommitments) != len(*proofs) {
+		return fmt.Errorf("mismatching number of blobs, commitments, and proofs. blobs: %d, commitments: %d, proofs: %d", len(*blobs), len(block.Header().BlobCommitments), len(*proofs))
+	}
+	for i := range *blobs {
+		if err := kzg4844.VerifyBlobProof(&(*blobs)[i], block.Header().BlobCommitments[i], (*proofs)[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Consortium) verifyVersionHash(block *types.Block) error {
+	curIndex := 0
+	hasher := sha256.New()
+	for _, tx := range block.Transactions() {
+		if tx.Type() == types.BlobTxType {
+			for _, blobHash := range tx.BlobHashes() {
+				blobHashFromCommitment := kzg4844.CalcBlobHashV1(hasher, &block.Header().BlobCommitments[curIndex])
+				if !bytes.Equal(blobHash[:], blobHashFromCommitment[:]) {
+					return fmt.Errorf("blob hash mismatch, blobHash: %x, blobHashFromCommitment: %x", blobHash, blobHashFromCommitment)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// skipBlobCheck checks whether the blob is still kept
+func (c *Consortium) skipBlobCheck(header *types.Header) bool {
+	if time.Unix(int64(header.Time), 0).Add(blobKeepPeriod).Before(time.Now()) {
+		return true
+	}
+	return false
 }
 
 // VerifyHeader checks whether a header conforms to the consensus rules.
@@ -500,6 +547,12 @@ func (c *Consortium) verifyCascadingFields(chain consensus.ChainHeaderReader, he
 		}
 	} else {
 		if err := misc.VerifyEip1559Header(chain.Config(), parent, header); err != nil {
+			return err
+		}
+	}
+
+	if chain.Config().IsCancun(header.Number) {
+		if err := misc.VerifyEIP4844Header(parent, header); err != nil {
 			return err
 		}
 	}
