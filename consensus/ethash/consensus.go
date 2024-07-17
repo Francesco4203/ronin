@@ -118,7 +118,7 @@ func (ethash *Ethash) VerifyHeader(chain consensus.ChainHeaderReader, header *ty
 
 // VerifyBlobHeader only available in v2
 func (ethash *Ethash) VerifyBlobHeader(block *types.Block, blobs *[]kzg4844.Blob, proofs *[]kzg4844.Proof) error {
-	return fmt.Errorf("not implemented")
+	return nil
 }
 
 // VerifyHeaders is similar to VerifyHeader, but verifies a batch of headers

@@ -20,7 +20,6 @@ package v1
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"math/big"
 	"math/rand"
@@ -173,7 +172,7 @@ func (c *Consortium) Author(header *types.Header) (common.Address, error) {
 
 // VerifyBlobHeader only available in v2
 func (c *Consortium) VerifyBlobHeader(block *types.Block, blobs *[]kzg4844.Blob, proofs *[]kzg4844.Proof) error {
-	return fmt.Errorf("not implemented")
+	return nil
 }
 
 // VerifyHeader checks whether a header conforms to the consensus rules.
