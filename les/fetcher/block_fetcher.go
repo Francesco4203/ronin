@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/trie"
@@ -84,6 +85,9 @@ type bodyRequesterFn func([]common.Hash) error
 
 // headerVerifierFn is a callback type to verify a block's header for fast propagation.
 type headerVerifierFn func(header *types.Header) error
+
+// blobHeadVerifyFn is a callback type to verify a block's header blob commitments.
+type blobHeaderVerifyFn func(block *types.Block, blobs *[]kzg4844.Blob, proofs *[]kzg4844.Proof) error
 
 // blockBroadcasterFn is a callback type for broadcasting a block to connected peers.
 type blockBroadcasterFn func(block *types.Block, propagate bool)
@@ -182,14 +186,15 @@ type BlockFetcher struct {
 	queued map[common.Hash]*blockOrHeaderInject // Set of already queued blocks (to dedup imports)
 
 	// Callbacks
-	getHeader      HeaderRetrievalFn  // Retrieves a header from the local chain
-	getBlock       blockRetrievalFn   // Retrieves a block from the local chain
-	verifyHeader   headerVerifierFn   // Checks if a block's headers have a valid proof of work
-	broadcastBlock blockBroadcasterFn // Broadcasts a block to connected peers
-	chainHeight    chainHeightFn      // Retrieves the current chain's height
-	insertHeaders  headersInsertFn    // Injects a batch of headers into the chain
-	insertChain    chainInsertFn      // Injects a batch of blocks into the chain
-	dropPeer       peerDropFn         // Drops a peer for misbehaving
+	getHeader        HeaderRetrievalFn  // Retrieves a header from the local chain
+	getBlock         blockRetrievalFn   // Retrieves a block from the local chain
+	verifyHeader     headerVerifierFn   // Checks if a block's headers have a valid proof of work
+	verifyBlobHeader blobHeaderVerifyFn // Checks if a block's headers have a valid blob commitment
+	broadcastBlock   blockBroadcasterFn // Broadcasts a block to connected peers
+	chainHeight      chainHeightFn      // Retrieves the current chain's height
+	insertHeaders    headersInsertFn    // Injects a batch of headers into the chain
+	insertChain      chainInsertFn      // Injects a batch of blocks into the chain
+	dropPeer         peerDropFn         // Drops a peer for misbehaving
 
 	// Testing hooks
 	announceChangeHook func(common.Hash, bool)           // Method to call upon adding or deleting a hash from the blockAnnounce list
@@ -200,31 +205,32 @@ type BlockFetcher struct {
 }
 
 // NewBlockFetcher creates a block fetcher to retrieve blocks based on hash announcements.
-func NewBlockFetcher(light bool, getHeader HeaderRetrievalFn, getBlock blockRetrievalFn, verifyHeader headerVerifierFn, broadcastBlock blockBroadcasterFn, chainHeight chainHeightFn, insertHeaders headersInsertFn, insertChain chainInsertFn, dropPeer peerDropFn) *BlockFetcher {
+func NewBlockFetcher(light bool, getHeader HeaderRetrievalFn, getBlock blockRetrievalFn, verifyHeader headerVerifierFn, verifyBlobHeader blobHeaderVerifyFn, broadcastBlock blockBroadcasterFn, chainHeight chainHeightFn, insertHeaders headersInsertFn, insertChain chainInsertFn, dropPeer peerDropFn) *BlockFetcher {
 	return &BlockFetcher{
-		light:          light,
-		notify:         make(chan *blockAnnounce),
-		inject:         make(chan *blockOrHeaderInject),
-		headerFilter:   make(chan chan *headerFilterTask),
-		bodyFilter:     make(chan chan *bodyFilterTask),
-		done:           make(chan common.Hash),
-		quit:           make(chan struct{}),
-		announces:      make(map[string]int),
-		announced:      make(map[common.Hash][]*blockAnnounce),
-		fetching:       make(map[common.Hash]*blockAnnounce),
-		fetched:        make(map[common.Hash][]*blockAnnounce),
-		completing:     make(map[common.Hash]*blockAnnounce),
-		queue:          prque.New(nil),
-		queues:         make(map[string]int),
-		queued:         make(map[common.Hash]*blockOrHeaderInject),
-		getHeader:      getHeader,
-		getBlock:       getBlock,
-		verifyHeader:   verifyHeader,
-		broadcastBlock: broadcastBlock,
-		chainHeight:    chainHeight,
-		insertHeaders:  insertHeaders,
-		insertChain:    insertChain,
-		dropPeer:       dropPeer,
+		light:            light,
+		notify:           make(chan *blockAnnounce),
+		inject:           make(chan *blockOrHeaderInject),
+		headerFilter:     make(chan chan *headerFilterTask),
+		bodyFilter:       make(chan chan *bodyFilterTask),
+		done:             make(chan common.Hash),
+		quit:             make(chan struct{}),
+		announces:        make(map[string]int),
+		announced:        make(map[common.Hash][]*blockAnnounce),
+		fetching:         make(map[common.Hash]*blockAnnounce),
+		fetched:          make(map[common.Hash][]*blockAnnounce),
+		completing:       make(map[common.Hash]*blockAnnounce),
+		queue:            prque.New(nil),
+		queues:           make(map[string]int),
+		queued:           make(map[common.Hash]*blockOrHeaderInject),
+		getHeader:        getHeader,
+		getBlock:         getBlock,
+		verifyHeader:     verifyHeader,
+		verifyBlobHeader: verifyBlobHeader,
+		broadcastBlock:   broadcastBlock,
+		chainHeight:      chainHeight,
+		insertHeaders:    insertHeaders,
+		insertChain:      insertChain,
+		dropPeer:         dropPeer,
 	}
 }
 
@@ -801,7 +807,19 @@ func (f *BlockFetcher) importBlocks(peer string, block *types.Block) {
 			return
 		}
 		// Quickly validate the header and propagate the block if it passes
-		switch err := f.verifyHeader(block.Header()); err {
+		err := f.verifyHeader(block.Header())
+		if err == nil {
+			var blobs []kzg4844.Blob
+			var proofs []kzg4844.Proof
+			for _, tx := range block.Transactions() {
+				if tx.Type() == types.BlobTxType {
+					blobs = append(blobs, tx.BlobTxSidecar().Blobs...)
+					proofs = append(proofs, tx.BlobTxSidecar().Proofs...)
+				}
+			}
+			err = f.verifyBlobHeader(block, &blobs, &proofs)
+		}
+		switch err {
 		case nil:
 			// All ok, quickly propagate to our peers
 			blockBroadcastOutTimer.UpdateSince(block.ReceivedAt)

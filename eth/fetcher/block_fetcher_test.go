@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/crypto/kzg4844"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie"
 )
@@ -95,7 +96,7 @@ func newTester(light bool) *fetcherTester {
 		blocks:  map[common.Hash]*types.Block{genesis.Hash(): genesis},
 		drops:   make(map[string]bool),
 	}
-	tester.fetcher = NewBlockFetcher(light, tester.getHeader, tester.getBlock, tester.verifyHeader, tester.broadcastBlock, tester.chainHeight, tester.insertHeaders, tester.insertChain, tester.dropPeer)
+	tester.fetcher = NewBlockFetcher(light, tester.getHeader, tester.getBlock, tester.verifyHeader, tester.verifyBlobHeader, tester.broadcastBlock, tester.chainHeight, tester.insertHeaders, tester.insertChain, tester.dropPeer)
 	tester.fetcher.Start()
 
 	return tester
@@ -119,6 +120,11 @@ func (f *fetcherTester) getBlock(hash common.Hash) *types.Block {
 
 // verifyHeader is a nop placeholder for the block header verification.
 func (f *fetcherTester) verifyHeader(header *types.Header) error {
+	return nil
+}
+
+// verifyBlobHeader is a nop placeholder for the block header blob verification.
+func (f *fetcherTester) verifyBlobHeader(block *types.Block, blobs *[]kzg4844.Blob, proofs *[]kzg4844.Proof) error {
 	return nil
 }
 
